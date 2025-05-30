@@ -35,6 +35,9 @@ server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
   const params: any = {
     pageSize,
     fields: "nextPageToken, files(id, name, mimeType)",
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+    corpora: "allDrives",
   };
 
   if (request.params?.cursor) {
@@ -59,6 +62,7 @@ async function readFileContent(fileId: string) {
   const file = await drive.files.get({
     fileId,
     fields: "mimeType",
+    supportsAllDrives: true,
   });
 
   // For Google Docs/Sheets/etc we need to export
@@ -82,7 +86,7 @@ async function readFileContent(fileId: string) {
     }
 
     const res = await drive.files.export(
-      { fileId, mimeType: exportMimeType },
+      { fileId, mimeType: exportMimeType, supportsAllDrives: true } as any,
       { responseType: "text" },
     );
 
@@ -94,7 +98,7 @@ async function readFileContent(fileId: string) {
 
   // For regular files download content
   const res = await drive.files.get(
-    { fileId, alt: "media" },
+    { fileId, alt: "media", supportsAllDrives: true },
     { responseType: "arraybuffer" },
   );
   const mimeType = file.data.mimeType || "application/octet-stream";
@@ -167,11 +171,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const userQuery = request.params.arguments?.query as string;
     const escapedQuery = userQuery.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     const formattedQuery = `fullText contains '${escapedQuery}'`;
-    
+
     const res = await drive.files.list({
       q: formattedQuery,
       pageSize: 10,
       fields: "files(id, name, mimeType, modifiedTime, size)",
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+      corpora: "allDrives",
     });
     
     const fileList = res.data.files
