@@ -15,7 +15,14 @@ import fs from "fs";
 import { google } from "googleapis";
 import path from "path";
 
+// Add global unhandled rejection handler for resilience
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED REJECTION:", reason);
+});
+
 const drive = google.drive("v3");
+const unauthenticatedError = -32699; // Custom error code for unauthenticated access, meant to be distinct
+                                     // from codes in the SDK
 
 const server = new Server(
   {
@@ -29,6 +36,29 @@ const server = new Server(
     },
   },
 );
+
+// Helper to wrap Google Drive API calls and handle token errors
+async function safeDriveCall<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error: any) {
+    if (
+      error?.response?.data?.error === "invalid_grant" ||
+      error?.response?.data?.error === "invalid_request" ||
+      error?.message?.includes("invalid_grant") ||
+      error?.message?.includes("invalid_request")
+    ) {
+      console.error(
+        "Google OAuth token is invalid or expired. Please re-authenticate using: node index.ts auth"
+      );
+      throw new McpError(
+        unauthenticatedError, 
+        "Google OAuth token is invalid or expired. Please re-authenticate."
+      );
+    }
+    throw error;
+  }
+}
 
 server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
   const pageSize = 10;
@@ -44,7 +74,7 @@ server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
     params.pageToken = request.params.cursor;
   }
 
-  const res = await drive.files.list(params);
+  const res = await safeDriveCall(() => drive.files.list(params));
   const files = res.data.files!;
 
   return {
@@ -59,11 +89,13 @@ server.setRequestHandler(ListResourcesRequestSchema, async (request) => {
 
 async function readFileContent(fileId: string) {
   // First get file metadata to check mime type
-  const file = await drive.files.get({
-    fileId,
-    fields: "mimeType",
-    supportsAllDrives: true,
-  });
+  const file = await safeDriveCall(() =>
+    drive.files.get({
+      fileId,
+      fields: "mimeType",
+      supportsAllDrives: true,
+    })
+  );
 
   // For Google Docs/Sheets/etc we need to export
   if (file.data.mimeType?.startsWith("application/vnd.google-apps")) {
@@ -85,9 +117,11 @@ async function readFileContent(fileId: string) {
         exportMimeType = "text/plain";
     }
 
-    const res = await drive.files.export(
-      { fileId, mimeType: exportMimeType, supportsAllDrives: true } as any,
-      { responseType: "text" },
+    const res = await safeDriveCall(() =>
+      drive.files.export(
+        { fileId, mimeType: exportMimeType, supportsAllDrives: true } as any,
+        { responseType: "text" }
+      )
     );
 
     return {
@@ -97,12 +131,14 @@ async function readFileContent(fileId: string) {
   }
 
   // For regular files download content
-  const res = await drive.files.get(
-    { fileId, alt: "media", supportsAllDrives: true },
-    { responseType: "arraybuffer" },
+  const res = await safeDriveCall(() =>
+    drive.files.get(
+      { fileId, alt: "media", supportsAllDrives: true },
+      { responseType: "arraybuffer" }
+    )
   );
   const mimeType = file.data.mimeType || "application/octet-stream";
-  
+
   if (mimeType.startsWith("text/") || mimeType === "application/json") {
     return {
       mimeType: mimeType,
@@ -119,7 +155,7 @@ async function readFileContent(fileId: string) {
 server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   const fileId = request.params.uri.replace("gdrive:///", "");
   const result = await readFileContent(fileId);
-  
+
   return {
     contents: [
       {
@@ -172,15 +208,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const escapedQuery = userQuery.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
     const formattedQuery = `fullText contains '${escapedQuery}'`;
 
-    const res = await drive.files.list({
-      q: formattedQuery,
-      pageSize: 10,
-      fields: "files(id, name, mimeType, modifiedTime, size)",
-      supportsAllDrives: true,
-      includeItemsFromAllDrives: true,
-      corpora: "allDrives",
-    });
-    
+    const res = await safeDriveCall(() =>
+      drive.files.list({
+        q: formattedQuery,
+        pageSize: 10,
+        fields: "files(id, name, mimeType, modifiedTime, size)",
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        corpora: "allDrives",
+      })
+    );
+
     const fileList = res.data.files
       ?.map((file: any) => `${file.name} (${file.mimeType}) - ID: ${file.id}`)
       .join("\n");
@@ -229,26 +267,26 @@ const credentialsPath = process.env.MCP_GDRIVE_CREDENTIALS || path.join(process.
 
 async function authenticateAndSaveCredentials() {
   const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || path.join(process.cwd(), "credentials", "gcp-oauth.keys.json");
-  
-  console.log("Looking for keys at:", keyPath);
-  console.log("Will save credentials to:", credentialsPath);
-  
+
   const auth = await authenticate({
     keyfilePath: keyPath,
     scopes: ["https://www.googleapis.com/auth/drive.readonly"],
   });
-  
+
+  fs.mkdirSync(path.dirname(credentialsPath), { recursive: true });
   fs.writeFileSync(credentialsPath, JSON.stringify(auth.credentials));
-  console.log("Credentials saved. You can now run the server.");
+}
+
+async function ensureCredentials() {
+  if (!fs.existsSync(credentialsPath)) {
+    await authenticateAndSaveCredentials();
+    // At this point, credentials are saved and we can continue.
+  }
+  // If credentials exist, nothing happens and we continue.
 }
 
 async function loadCredentialsAndRunServer() {
-  if (!fs.existsSync(credentialsPath)) {
-    console.error(
-      "Credentials not found. Please run with 'auth' argument first.",
-    );
-    process.exit(1);
-  }
+  await ensureCredentials(); // This will block until authentication is done
 
   const credentials = JSON.parse(fs.readFileSync(credentialsPath, "utf-8"));
   const auth = new google.auth.OAuth2();
@@ -259,11 +297,7 @@ async function loadCredentialsAndRunServer() {
   await server.connect(transport);
 }
 
-if (process.argv[2] === "auth") {
-  authenticateAndSaveCredentials().catch(console.error);
-} else {
-  loadCredentialsAndRunServer().catch((error) => {
-    process.stderr.write(`Error: ${error}\n`);
-    process.exit(1);
-  });
-}
+loadCredentialsAndRunServer().catch((error) => {
+  process.stderr.write(`Error: ${error}\n`);
+  process.exit(1);
+});
