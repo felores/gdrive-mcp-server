@@ -49,12 +49,23 @@ async function safeDriveCall<T>(fn: () => Promise<T>): Promise<T> {
       error?.message?.includes("invalid_request")
     ) {
       console.error(
-        "Google OAuth token is invalid or expired. Please re-authenticate using: node index.ts auth"
+        "Google OAuth token is invalid or expired. Attempting re-authentication..."
       );
-      throw new McpError(
-        unauthenticatedError, 
-        "Google OAuth token is invalid or expired. Please re-authenticate."
-      );
+      // Re-authenticate and reload credentials
+      await authenticateAndSaveCredentials();
+      const credentials = JSON.parse(fs.readFileSync(credentialsPath, "utf-8"));
+      const auth = new google.auth.OAuth2();
+      auth.setCredentials(credentials);
+      google.options({ auth });
+      // Retry the original call once after re-authentication
+      try {
+        return await fn();
+      } catch (retryError: any) {
+        throw new McpError(
+          unauthenticatedError,
+          "Google OAuth token is invalid or expired, and re-authentication failed. Please try restarting the server."
+        );
+      }
     }
     throw error;
   }
