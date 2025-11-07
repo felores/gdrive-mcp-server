@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/felores-gdrive-mcp-server-badge.png)](https://mseep.ai/app/felores-gdrive-mcp-server)
+
 # Google Drive MCP Server
 
 A powerful Model Context Protocol (MCP) server that provides seamless integration with Google Drive, allowing AI models to search, list, and read files from Google Drive.
