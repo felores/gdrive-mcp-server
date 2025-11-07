@@ -240,6 +240,23 @@ async function authenticateAndSaveCredentials() {
   console.log("Credentials saved. You can now run the server.");
 }
 
+async function refreshAccessToken(auth: any, credentials: any) {
+  try {
+    console.error('[GDrive] Attempting to refresh token...');
+    const response = await auth.refreshAccessToken();
+    const tokens = response.credentials;
+    
+    // Save the new tokens
+    fs.writeFileSync(credentialsPath, JSON.stringify(tokens));
+    console.error('[GDrive] Token refreshed and saved successfully');
+    
+    return true;
+  } catch (error) {
+    console.error('[GDrive Error] Token refresh failed:', error);
+    return false;
+  }
+}
+
 async function loadCredentialsAndRunServer() {
   if (!fs.existsSync(credentialsPath)) {
     console.error(
@@ -249,9 +266,58 @@ async function loadCredentialsAndRunServer() {
   }
 
   const credentials = JSON.parse(fs.readFileSync(credentialsPath, "utf-8"));
-  const auth = new google.auth.OAuth2();
+  
+  // Get OAuth keys for proper client initialization
+  const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || path.join(process.cwd(), "credentials", "gcp-oauth.keys.json");
+  const oauthKeys = JSON.parse(fs.readFileSync(keyPath, "utf-8"));
+  
+  // Create OAuth2 client with proper credentials
+  const auth = new google.auth.OAuth2(
+    oauthKeys.installed.client_id,
+    oauthKeys.installed.client_secret,
+    oauthKeys.installed.redirect_uris[0]
+  );
   auth.setCredentials(credentials);
+  
+  // Set up token refresh handler
+  auth.on('tokens', (tokens) => {
+    const newCredentials = { ...credentials, ...tokens };
+    fs.writeFileSync(credentialsPath, JSON.stringify(newCredentials));
+    console.error('[GDrive] Token refreshed and saved successfully');
+  });
+
   google.options({ auth });
+
+  // Wrap API calls with token refresh logic
+  const originalFilesSearch = drive.files.list.bind(drive.files);
+  drive.files.list = async function(params?: any, options?: any): Promise<any> {
+    try {
+      return await originalFilesSearch(params, options);
+    } catch (error: any) {
+      if (error.message?.includes('invalid_grant') || error.message?.includes('invalid_token')) {
+        console.error('[GDrive] Token expired, attempting refresh...');
+        if (await refreshAccessToken(auth, credentials)) {
+          return await originalFilesSearch(params, options);
+        }
+      }
+      throw error;
+    }
+  };
+
+  const originalFilesGet = drive.files.get.bind(drive.files);
+  drive.files.get = async function(params?: any, options?: any): Promise<any> {
+    try {
+      return await originalFilesGet(params, options);
+    } catch (error: any) {
+      if (error.message?.includes('invalid_grant') || error.message?.includes('invalid_token')) {
+        console.error('[GDrive] Token expired, attempting refresh...');
+        if (await refreshAccessToken(auth, credentials)) {
+          return await originalFilesGet(params, options);
+        }
+      }
+      throw error;
+    }
+  };
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

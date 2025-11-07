@@ -126,13 +126,14 @@ npm run build
    # Move your downloaded OAuth JSON file to the credentials directory as gcp-oauth.keys.json
    ```
 
-2. Run the authentication command:
+2. Run the authentication command (only needed once for initial setup):
    ```bash
    node dist/index.js auth
    ```
 
 3. Complete the OAuth flow in your browser
 4. Credentials will be saved in `credentials/.gdrive-server-credentials.json`
+5. After initial authentication, tokens will be automatically refreshed when needed
 
 ## 🔧 Usage
 
@@ -184,6 +185,7 @@ Replace `path/to/gdrive-mcp-server` with the actual path to your installation di
 - OAuth credentials and tokens are excluded from version control
 - Read-only access to Google Drive
 - Secure OAuth 2.0 authentication flow
+- Automatic and secure token refresh handling
 
 ## 🤝 Contributing
 
